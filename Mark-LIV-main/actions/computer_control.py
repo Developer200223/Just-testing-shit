@@ -328,10 +328,12 @@ def _screen_find(description: str) -> tuple[int, int] | None:
         image_bytes = buf.getvalue()
 
         prompt = (
-            f"This is a screenshot of a {w}×{h} pixel screen. "
-            f"Locate the UI element described as: '{description}'. "
-            f"Reply with ONLY the center coordinates as: x,y "
-            f"If the element is not visible, reply: NOT_FOUND"
+            f"This is a screenshot of a {w}x{h} pixel screen. Locate the UI element "
+            f"described as: '{description}'. Return ONLY JSON in this exact shape: "
+            '{"found":true,"box":[left,top,right,bottom],"confidence":0.0} '
+            'or {"found":false,"box":null,"confidence":0.0}. '
+            "Coordinates must be integer pixels in this image, confidence must be "
+            "between 0 and 1, and never guess when the element is not visible."
         )
 
         from core import gemini
@@ -342,13 +344,25 @@ def _screen_find(description: str) -> tuple[int, int] | None:
         if response is None:
             return None
 
-        text = (response.text or "").strip()
-        if "NOT_FOUND" in text.upper():
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", (response.text or "").strip()).strip()
+        try:
+            result = json.loads(text)
+            box = result.get("box")
+            confidence = float(result.get("confidence", 0.0))
+            if (result.get("found") is True and isinstance(box, list) and len(box) == 4
+                    and confidence >= 0.70):
+                left, top, right, bottom = (int(value) for value in box)
+                if 0 <= left < right <= w and 0 <= top < bottom <= h:
+                    return (left + right) // 2, (top + bottom) // 2
+                return None
             return None
-
-        match = re.search(r"(\d+)\s*,\s*(\d+)", text)
-        if match:
-            return int(match.group(1)), int(match.group(2))
+        except (ValueError, TypeError, json.JSONDecodeError):
+            # Keep compatibility with older model responses, but still validate bounds.
+            match = re.search(r"(\d+)\s*,\s*(\d+)", text)
+            if match:
+                x, y = int(match.group(1)), int(match.group(2))
+                if 0 <= x < w and 0 <= y < h:
+                    return x, y
 
     except Exception as e:
         print(f"[ComputerControl] ⚠️ screen_find failed: {e}")

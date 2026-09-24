@@ -37,6 +37,16 @@ _PROCESS_NAMES = {
     "minecraft": ("java", "minecraftlauncher"),
 }
 
+_WINDOW_TOKENS = {
+    "stormworks": ("stormworks",),
+    "stormworks build and rescue": ("stormworks",),
+    "rdr2": ("red dead redemption 2", "rdr2"),
+    "red dead redemption 2": ("red dead redemption 2", "rdr2"),
+    "gta v": ("grand theft auto v", "gta v", "gta5"),
+    "grand theft auto v": ("grand theft auto v", "gta v", "gta5"),
+    "minecraft": ("minecraft",),
+}
+
 
 def _key(value: Any) -> str:
     return " ".join(str(value or "").lower().strip().split())
@@ -192,6 +202,37 @@ def _save_lua(code: Any, filename: Any, confirm: bool) -> str:
     return f"Saved Lua script to {path}. It was not executed automatically."
 
 
+def _capture_game_frame(game: str):
+    """Capture the game window and return (image, left, top, width, height)."""
+    if pyautogui is None:
+        raise RuntimeError("PyAutoGUI is not available")
+    game_key = _key(game)
+    title_tokens = _WINDOW_TOKENS.get(game_key, (game_key,))
+    try:
+        import pygetwindow as gw
+        candidates = []
+        for window in gw.getAllWindows():
+            title = _key(getattr(window, "title", ""))
+            if any(token and token in title for token in title_tokens) and window.width > 400 and window.height > 300:
+                candidates.append(window)
+        if candidates:
+            window = max(candidates, key=lambda item: item.width * item.height)
+            try:
+                window.activate()
+                time.sleep(0.15)
+            except Exception:
+                pass
+            left, top = max(0, int(window.left)), max(0, int(window.top))
+            width, height = int(window.width), int(window.height)
+            image = pyautogui.screenshot(region=(left, top, width, height))
+            return image, left, top, width, height
+    except Exception:
+        pass
+
+    width, height = pyautogui.size()
+    return pyautogui.screenshot(), 0, 0, int(width), int(height)
+
+
 def _visual_play(game: str, goal: str, max_steps: int, confirm: bool) -> str:
     """Observe the game and execute one bounded, model-selected input at a time."""
     if not confirm:
@@ -209,20 +250,23 @@ def _visual_play(game: str, goal: str, max_steps: int, confirm: bool) -> str:
     history: list[str] = []
     for turn in range(max_steps):
         try:
-            image = pyautogui.screenshot()
+            image, origin_x, origin_y, image_width, image_height = _capture_game_frame(game)
             buffer = io.BytesIO()
             image.save(buffer, format="PNG")
             prompt = (
                 "You are controlling a desktop game as a cautious human operator. "
                 f"Game: {game}. Goal: {goal}. Turn {turn + 1}/{max_steps}. "
+                f"The image is exactly {image_width}x{image_height} pixels and starts at "
+                f"desktop coordinate ({origin_x},{origin_y}). "
                 "Inspect the screenshot and return ONLY one JSON object. Allowed outputs: "
                 "{\"type\":\"press\",\"key\":\"...\"}, "
                 "{\"type\":\"key_down\",\"key\":\"...\"}, "
                 "{\"type\":\"key_up\",\"key\":\"...\"}, "
-                "{\"type\":\"click\",\"x\":123,\"y\":456}, "
-                "{\"type\":\"screen_click\",\"description\":\"...\"}, "
+                "{\"type\":\"click\",\"x\":123,\"y\":456,\"confidence\":0.0}, "
                 "{\"type\":\"sleep\",\"seconds\":1}, or "
                 "{\"type\":\"done\",\"reason\":\"...\"}. "
+                "Click coordinates must be relative to this image, not the desktop. "
+                "Use confidence below 0.70 only by returning sleep instead. "
                 "Never click a destructive confirmation, purchase, account, or quit control. "
                 "If the goal is not visually safe or the game is still loading, use sleep. "
                 f"Previous actions: {history[-6:]}"
@@ -242,6 +286,20 @@ def _visual_play(game: str, goal: str, max_steps: int, confirm: bool) -> str:
                 return f"Visual game control stopped after {turn} steps: {decision.get('reason', 'goal reported complete')}."
             if kind not in {"press", "key_down", "key_up", "click", "screen_click", "sleep"}:
                 return f"Visual control stopped after {turn} steps: unsupported model action '{kind}'."
+            if kind == "click":
+                try:
+                    confidence = float(decision.get("confidence", 0.0))
+                    x, y = int(decision["x"]), int(decision["y"])
+                except (KeyError, TypeError, ValueError):
+                    return f"Visual control stopped after {turn} steps: click lacked valid coordinates or confidence."
+                if confidence < 0.70:
+                    history.append("click rejected: confidence below 0.70")
+                    time.sleep(0.25)
+                    continue
+                if not (0 <= x < image_width and 0 <= y < image_height):
+                    return f"Visual control stopped after {turn} steps: click was outside the captured game window."
+                decision["x"] = x + origin_x
+                decision["y"] = y + origin_y
             result = _execute_steps([decision], True)
             history.append(f"{kind}: {result}")
             if "stopped" in result.lower() or "failed" in result.lower():
