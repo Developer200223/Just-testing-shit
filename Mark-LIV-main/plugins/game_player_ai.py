@@ -33,6 +33,8 @@ PLUGIN = {
             "app_id": {"type": "STRING", "description": "Optional launcher AppID"},
             "code": {"type": "STRING", "description": "Lua source to save for the selected game"},
             "filename": {"type": "STRING", "description": "Lua filename for a saved game script"},
+            "goal": {"type": "STRING", "description": "Concrete visual goal, such as place a row of blocks or open the vehicle editor"},
+            "max_steps": {"type": "INTEGER", "description": "Visual control limit from 1 to 20"},
         },
         "required": ["game", "action"],
     },
@@ -282,6 +284,8 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
                 "confirm": parameters.get("confirm", False),
                 "code": parameters.get("code"),
                 "filename": parameters.get("filename"),
+                "goal": parameters.get("goal") or target or action,
+                "max_steps": parameters.get("max_steps", 8),
             }, player=player)
 
         if game == "minecraft":

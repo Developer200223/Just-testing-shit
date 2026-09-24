@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import io
 import platform
+import re
 import shutil
 import subprocess
 import time
@@ -190,6 +192,67 @@ def _save_lua(code: Any, filename: Any, confirm: bool) -> str:
     return f"Saved Lua script to {path}. It was not executed automatically."
 
 
+def _visual_play(game: str, goal: str, max_steps: int, confirm: bool) -> str:
+    """Observe the game and execute one bounded, model-selected input at a time."""
+    if not confirm:
+        return "Visual game control was not started because confirm=true was not provided."
+    if pyautogui is None:
+        return "Visual game control requires PyAutoGUI and a visible desktop session."
+    try:
+        from google import genai as _genai  # noqa: F401  # validates the optional SDK
+        from google.genai import types as gtypes
+        from core import gemini
+    except Exception as exc:
+        return f"Visual game control is unavailable because the Gemini SDK is not ready: {exc}"
+
+    max_steps = min(20, max(1, int(max_steps or 8)))
+    history: list[str] = []
+    for turn in range(max_steps):
+        try:
+            image = pyautogui.screenshot()
+            buffer = io.BytesIO()
+            image.save(buffer, format="PNG")
+            prompt = (
+                "You are controlling a desktop game as a cautious human operator. "
+                f"Game: {game}. Goal: {goal}. Turn {turn + 1}/{max_steps}. "
+                "Inspect the screenshot and return ONLY one JSON object. Allowed outputs: "
+                "{\"type\":\"press\",\"key\":\"...\"}, "
+                "{\"type\":\"key_down\",\"key\":\"...\"}, "
+                "{\"type\":\"key_up\",\"key\":\"...\"}, "
+                "{\"type\":\"click\",\"x\":123,\"y\":456}, "
+                "{\"type\":\"screen_click\",\"description\":\"...\"}, "
+                "{\"type\":\"sleep\",\"seconds\":1}, or "
+                "{\"type\":\"done\",\"reason\":\"...\"}. "
+                "Never click a destructive confirmation, purchase, account, or quit control. "
+                "If the goal is not visually safe or the game is still loading, use sleep. "
+                f"Previous actions: {history[-6:]}"
+            )
+            response = gemini.call(
+                [gtypes.Part.from_bytes(data=buffer.getvalue(), mime_type="image/png"), prompt],
+                tier=gemini.FAST,
+                timeout_ms=30_000,
+            )
+            raw = (response.text if response else "").strip()
+            raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw).strip()
+            decision = json.loads(raw)
+            if not isinstance(decision, dict):
+                return f"Visual control stopped after {turn} steps: model returned invalid JSON."
+            kind = _key(decision.get("type"))
+            if kind == "done":
+                return f"Visual game control stopped after {turn} steps: {decision.get('reason', 'goal reported complete')}."
+            if kind not in {"press", "key_down", "key_up", "click", "screen_click", "sleep"}:
+                return f"Visual control stopped after {turn} steps: unsupported model action '{kind}'."
+            result = _execute_steps([decision], True)
+            history.append(f"{kind}: {result}")
+            if "stopped" in result.lower() or "failed" in result.lower():
+                return f"Visual control stopped after {turn + 1} steps: {result}"
+        except json.JSONDecodeError:
+            return f"Visual control stopped after {turn} steps: model did not return valid JSON."
+        except Exception as exc:
+            return f"Visual control stopped after {turn} steps: {exc}"
+    return f"Visual control reached its {max_steps}-step safety limit. Inspect the game before continuing."
+
+
 def game_control(parameters=None, player=None) -> str:
     params = parameters or {}
     game = _key(params.get("game"))
@@ -206,13 +269,22 @@ def game_control(parameters=None, player=None) -> str:
             if "Could not" in launch_result or "cannot launch" in launch_result:
                 return launch_result
             result = f"{result} {launch_result} {_execute_steps(params.get('steps'), bool(params.get('confirm')))}"
-    elif action in {"build", "build_vehicle", "execute_build", "place_block", "customize", "play"}:
+    elif action in {"build", "build_vehicle", "execute_build", "place_block", "customize", "play", "autoplay"}:
         launch_result = _launch_game(game, platform_name, params.get("app_id"))
         if "Could not" in launch_result or "cannot launch" in launch_result:
             return launch_result
-        result = f"{launch_result} {_execute_steps(params.get('steps'), bool(params.get('confirm')))}"
+        if params.get("steps"):
+            follow_up = _execute_steps(params.get("steps"), bool(params.get("confirm")))
+        else:
+            follow_up = _visual_play(
+                game,
+                str(params.get("goal") or action),
+                int(params.get("max_steps", 8)),
+                bool(params.get("confirm")),
+            )
+        result = f"{launch_result} {follow_up}"
     else:
-        return f"Unsupported game action '{action}'. Use launch or build_vehicle."
+        return f"Unsupported game action '{action}'. Use launch, play, build_vehicle, place_block, customize, or lua."
 
     if player:
         try:
@@ -227,13 +299,13 @@ TOOL = {
     "description": (
         "Launch an installed Steam or Epic game and control it with explicit, approved "
         "input steps. Supports launch, play, place_block, customize, build_vehicle, "
-        "and lua. Use screen_click steps for visual interaction; never claim success "
-        "unless the inputs were executed."
+        "and lua. With confirm=true and no steps, play/build modes use a bounded "
+        "screenshot-driven visual loop. Never claim success unless inputs were executed."
     ),
     "parameters": {
         "type": "OBJECT",
         "properties": {
-            "action": {"type": "STRING", "description": "launch | play | place_block | customize | build_vehicle | lua"},
+            "action": {"type": "STRING", "description": "launch | play | autoplay | place_block | customize | build_vehicle | lua"},
             "game": {"type": "STRING", "description": "Installed game name, such as Stormworks"},
             "platform": {"type": "STRING", "description": "steam or epic"},
             "app_id": {"type": "STRING", "description": "Optional Steam AppID or Epic app identifier"},
@@ -241,6 +313,8 @@ TOOL = {
             "steps": {"type": "STRING", "description": "JSON array of press, key_down, key_up, hotkey, write, click, mouse_down, mouse_up, move, screen_click, and sleep steps"},
             "code": {"type": "STRING", "description": "Lua source to save for the selected game"},
             "filename": {"type": "STRING", "description": "Lua filename, saved under MARK-LIV-game-scripts"},
+            "goal": {"type": "STRING", "description": "Concrete visual game goal, such as place a row of blocks or open the vehicle editor"},
+            "max_steps": {"type": "INTEGER", "description": "Visual loop limit from 1 to 20, default 8"},
         },
         "required": ["game", "action"],
     },
