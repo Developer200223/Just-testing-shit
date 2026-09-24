@@ -27,10 +27,12 @@ PLUGIN = {
             "target": {"type": "STRING", "description": "What to build, collect, defeat, or pursue"},
             "resource": {"type": "STRING", "description": "Resource to gather, such as wood, iron, stone, fish, pelt, herbs, ammo, or food"},
             "context": {"type": "STRING", "description": "Optional situational details, such as being chased, being in cover, low on health, or under pressure"},
-            "steps": {"type": "STRING", "description": "Optional JSON array of explicit game input steps for a supported build workflow"},
+            "steps": {"type": "STRING", "description": "Optional JSON array of explicit game input steps for play, block placement, customization, or building"},
             "confirm": {"type": "BOOLEAN", "description": "Must be true before keyboard/mouse build steps run"},
             "platform": {"type": "STRING", "description": "Game platform, such as steam or epic"},
             "app_id": {"type": "STRING", "description": "Optional launcher AppID"},
+            "code": {"type": "STRING", "description": "Lua source to save for the selected game"},
+            "filename": {"type": "STRING", "description": "Lua filename for a saved game script"},
         },
         "required": ["game", "action"],
     },
@@ -270,14 +272,16 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
             except Exception:
                 pass
 
-        if action == "build_vehicle":
+        if action in {"build_vehicle", "place_block", "customize", "play", "lua", "lua_code", "script"}:
             return game_control({
-                "action": "build_vehicle",
+                "action": action,
                 "game": game,
                 "platform": parameters.get("platform", "steam"),
                 "app_id": parameters.get("app_id"),
                 "steps": parameters.get("steps"),
                 "confirm": parameters.get("confirm", False),
+                "code": parameters.get("code"),
+                "filename": parameters.get("filename"),
             }, player=player)
 
         if game == "minecraft":

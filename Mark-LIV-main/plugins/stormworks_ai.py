@@ -36,10 +36,12 @@ PLUGIN = {
             "target": {"type": "STRING", "description": "Vehicle, machine, room, engine bay, compartment, or objective to build or repair"},
             "resource": {"type": "STRING", "description": "Resource or component such as metal, fuel, batteries, wiring, computers, parts, or cargo"},
             "context": {"type": "STRING", "description": "Optional scenario such as broken engine, low fuel, rough seas, overloaded craft, tight cabin, or power loss"},
-            "steps": {"type": "STRING", "description": "Optional JSON array of explicit UI input steps for a configured Stormworks build workflow"},
+            "steps": {"type": "STRING", "description": "Optional JSON array of explicit UI input steps for play, block placement, customization, or building"},
             "confirm": {"type": "BOOLEAN", "description": "Must be true before keyboard/mouse build steps run"},
             "platform": {"type": "STRING", "description": "Game platform, normally steam"},
             "app_id": {"type": "STRING", "description": "Optional Stormworks Steam AppID"},
+            "code": {"type": "STRING", "description": "Lua source to save for a game script"},
+            "filename": {"type": "STRING", "description": "Lua filename for a saved game script"},
         },
         "required": ["action"],
     },
@@ -408,14 +410,16 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
             except Exception:
                 pass
 
-        if action == "build_vehicle":
+        if action in {"build_vehicle", "place_block", "customize", "play", "lua", "lua_code", "script"}:
             return game_control({
-                "action": "build_vehicle",
+                "action": action,
                 "game": "stormworks",
                 "platform": parameters.get("platform", "steam"),
                 "app_id": parameters.get("app_id"),
                 "steps": parameters.get("steps"),
                 "confirm": parameters.get("confirm", False),
+                "code": parameters.get("code"),
+                "filename": parameters.get("filename"),
             }, player=player)
 
         if action == "build_anything":

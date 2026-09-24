@@ -7,6 +7,7 @@ import platform
 import shutil
 import subprocess
 import time
+from pathlib import Path
 from typing import Any
 
 try:
@@ -117,8 +118,8 @@ def _execute_steps(raw_steps: Any, confirm: bool) -> str:
         steps = raw_steps
     if not isinstance(steps, list) or not steps:
         return "No build steps were supplied, so nothing was changed in the game."
-    if len(steps) > 200:
-        return "Build input was rejected: maximum 200 steps per call."
+    if len(steps) > 500:
+        return "Game input was rejected: maximum 500 steps per call."
 
     pyautogui.PAUSE = 0.08
     executed = 0
@@ -136,10 +137,29 @@ def _execute_steps(raw_steps: Any, confirm: bool) -> str:
                 pyautogui.hotkey(*(str(key) for key in keys))
             elif kind == "write":
                 pyautogui.write(str(step.get("text", "")), interval=0.02)
+            elif kind == "key_down":
+                pyautogui.keyDown(str(step["key"]))
+            elif kind == "key_up":
+                pyautogui.keyUp(str(step["key"]))
             elif kind == "click":
                 pyautogui.click(int(step["x"]), int(step["y"]))
+            elif kind == "mouse_down":
+                pyautogui.mouseDown(button=str(step.get("button", "left")))
+            elif kind == "mouse_up":
+                pyautogui.mouseUp(button=str(step.get("button", "left")))
             elif kind == "move":
                 pyautogui.moveTo(int(step["x"]), int(step["y"]), duration=0.15)
+            elif kind == "screen_click":
+                description = str(step.get("description", "")).strip()
+                if not description:
+                    return f"Game input stopped after {executed} steps: screen_click needs description."
+                from actions.computer_control import computer_control
+                result = computer_control({
+                    "action": "screen_click",
+                    "description": description,
+                })
+                if result.startswith("Element not found") or "failed" in result.lower():
+                    return f"Game input stopped after {executed} steps: {result}"
             elif kind == "sleep":
                 delay = min(10.0, max(0.0, float(step.get("seconds", 0.2))))
                 time.sleep(delay)
@@ -150,7 +170,24 @@ def _execute_steps(raw_steps: Any, confirm: bool) -> str:
         return f"Build stopped after {executed} steps: invalid step data ({exc})."
     except Exception as exc:
         return f"Build stopped after {executed} steps: {exc}"
-    return f"Executed {executed} approved game input steps. Verify the vehicle in-game before driving it."
+    return f"Executed {executed} approved game input steps. Verify the game state before continuing."
+
+
+def _save_lua(code: Any, filename: Any, confirm: bool) -> str:
+    if not confirm:
+        return "Lua was not saved because confirm=true was not provided."
+    source = str(code or "").strip()
+    if not source:
+        return "No Lua code was supplied."
+    safe_name = "".join(ch for ch in str(filename or "game_script.lua")
+                        if ch.isalnum() or ch in "._-")
+    if not safe_name.endswith(".lua"):
+        safe_name += ".lua"
+    directory = Path.home() / "MARK-LIV-game-scripts"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / safe_name
+    path.write_text(source + "\n", encoding="utf-8")
+    return f"Saved Lua script to {path}. It was not executed automatically."
 
 
 def game_control(parameters=None, player=None) -> str:
@@ -161,7 +198,15 @@ def game_control(parameters=None, player=None) -> str:
 
     if action in {"launch", "open", "start"}:
         result = _launch_game(game, platform_name, params.get("app_id"))
-    elif action in {"build", "build_vehicle", "execute_build"}:
+    elif action in {"lua", "lua_code", "script"}:
+        result = _save_lua(params.get("code"), params.get("filename"),
+                           bool(params.get("confirm")))
+        if params.get("steps"):
+            launch_result = _launch_game(game, platform_name, params.get("app_id"))
+            if "Could not" in launch_result or "cannot launch" in launch_result:
+                return launch_result
+            result = f"{result} {launch_result} {_execute_steps(params.get('steps'), bool(params.get('confirm')))}"
+    elif action in {"build", "build_vehicle", "execute_build", "place_block", "customize", "play"}:
         launch_result = _launch_game(game, platform_name, params.get("app_id"))
         if "Could not" in launch_result or "cannot launch" in launch_result:
             return launch_result
@@ -180,19 +225,22 @@ def game_control(parameters=None, player=None) -> str:
 TOOL = {
     "name": "game_control",
     "description": (
-        "Actually launch an installed Steam or Epic game. For build_vehicle, execute "
-        "only an explicit JSON input sequence when confirm=true; never claim a vehicle "
-        "was built unless the steps were executed. Use this instead of merely describing a build."
+        "Launch an installed Steam or Epic game and control it with explicit, approved "
+        "input steps. Supports launch, play, place_block, customize, build_vehicle, "
+        "and lua. Use screen_click steps for visual interaction; never claim success "
+        "unless the inputs were executed."
     ),
     "parameters": {
         "type": "OBJECT",
         "properties": {
-            "action": {"type": "STRING", "description": "launch or build_vehicle"},
+            "action": {"type": "STRING", "description": "launch | play | place_block | customize | build_vehicle | lua"},
             "game": {"type": "STRING", "description": "Installed game name, such as Stormworks"},
             "platform": {"type": "STRING", "description": "steam or epic"},
             "app_id": {"type": "STRING", "description": "Optional Steam AppID or Epic app identifier"},
             "confirm": {"type": "BOOLEAN", "description": "Must be true before keyboard/mouse build steps run"},
-            "steps": {"type": "STRING", "description": "JSON array of press, hotkey, write, click, move, and sleep steps"},
+            "steps": {"type": "STRING", "description": "JSON array of press, key_down, key_up, hotkey, write, click, mouse_down, mouse_up, move, screen_click, and sleep steps"},
+            "code": {"type": "STRING", "description": "Lua source to save for the selected game"},
+            "filename": {"type": "STRING", "description": "Lua filename, saved under MARK-LIV-game-scripts"},
         },
         "required": ["game", "action"],
     },
