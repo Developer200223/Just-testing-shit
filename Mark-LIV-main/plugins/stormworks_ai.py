@@ -13,6 +13,8 @@ import re
 import webbrowser
 from urllib.parse import quote_plus
 
+from actions.game_control import game_control
+
 PLUGIN = {
     "name": "stormworks_ai",
     "description": (
@@ -34,6 +36,10 @@ PLUGIN = {
             "target": {"type": "STRING", "description": "Vehicle, machine, room, engine bay, compartment, or objective to build or repair"},
             "resource": {"type": "STRING", "description": "Resource or component such as metal, fuel, batteries, wiring, computers, parts, or cargo"},
             "context": {"type": "STRING", "description": "Optional scenario such as broken engine, low fuel, rough seas, overloaded craft, tight cabin, or power loss"},
+            "steps": {"type": "STRING", "description": "Optional JSON array of explicit UI input steps for a configured Stormworks build workflow"},
+            "confirm": {"type": "BOOLEAN", "description": "Must be true before keyboard/mouse build steps run"},
+            "platform": {"type": "STRING", "description": "Game platform, normally steam"},
+            "app_id": {"type": "STRING", "description": "Optional Stormworks Steam AppID"},
         },
         "required": ["action"],
     },
@@ -401,6 +407,16 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
                 player.write_log(f"JARVIS: stormworks_ai -> {action}")
             except Exception:
                 pass
+
+        if action == "build_vehicle":
+            return game_control({
+                "action": "build_vehicle",
+                "game": "stormworks",
+                "platform": parameters.get("platform", "steam"),
+                "app_id": parameters.get("app_id"),
+                "steps": parameters.get("steps"),
+                "confirm": parameters.get("confirm", False),
+            }, player=player)
 
         if action == "build_anything":
             return _build_anything_plan(str(target), str(context))

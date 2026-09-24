@@ -8,6 +8,8 @@ handles cursor, keyboard, and screen recognition.
 
 import re
 
+from actions.game_control import game_control
+
 PLUGIN = {
     "name": "game_player_ai",
     "description": (
@@ -25,6 +27,10 @@ PLUGIN = {
             "target": {"type": "STRING", "description": "What to build, collect, defeat, or pursue"},
             "resource": {"type": "STRING", "description": "Resource to gather, such as wood, iron, stone, fish, pelt, herbs, ammo, or food"},
             "context": {"type": "STRING", "description": "Optional situational details, such as being chased, being in cover, low on health, or under pressure"},
+            "steps": {"type": "STRING", "description": "Optional JSON array of explicit game input steps for a supported build workflow"},
+            "confirm": {"type": "BOOLEAN", "description": "Must be true before keyboard/mouse build steps run"},
+            "platform": {"type": "STRING", "description": "Game platform, such as steam or epic"},
+            "app_id": {"type": "STRING", "description": "Optional launcher AppID"},
         },
         "required": ["game", "action"],
     },
@@ -264,11 +270,19 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
             except Exception:
                 pass
 
+        if action == "build_vehicle":
+            return game_control({
+                "action": "build_vehicle",
+                "game": game,
+                "platform": parameters.get("platform", "steam"),
+                "app_id": parameters.get("app_id"),
+                "steps": parameters.get("steps"),
+                "confirm": parameters.get("confirm", False),
+            }, player=player)
+
         if game == "minecraft":
             if action == "place_block":
                 return _minecraft_place_block(str(resource or target or "stone"))
-            if action == "build_vehicle":
-                return _minecraft_build_vehicle(str(target or "vehicle"))
             if action == "farm_resources":
                 return _minecraft_farm_loop(str(resource), str(target))
             if action == "combat":
